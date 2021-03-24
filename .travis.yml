@@ -7,5 +7,5 @@ jobs:
       - echo "$DOCKER_PASS" | docker login -u "$DOCKER_USERNAME" --password-stdin
       - travis_wait 40 docker build -t grafana-oauth-role-restriction .
       - docker images
-      - if [ $TRAVIS_TAG ]; then docker tag travis-ci-build-stages-demo $DOCKER_USERNAME/grafana-oauth-role-restriction:$TRAVIS_TAG; fi
+      - if [ $TRAVIS_TAG ]; then docker tag grafana-oauth-role-restriction $DOCKER_USERNAME/grafana-oauth-role-restriction:$TRAVIS_TAG; fi
       - if [ $TRAVIS_TAG ]; then docker push $DOCKER_USERNAME/grafana-oauth-role-restriction:$TRAVIS_TAG; fi
