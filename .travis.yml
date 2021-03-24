@@ -1,0 +1,11 @@
+dist: trusty
+
+jobs:
+  include:
+    - stage: build docker image
+      script:
+      - echo "$DOCKER_PASS" | docker login -u "$DOCKER_USERNAME" --password-stdin
+      - docker build -t grafana-oauth-role-restriction .
+      - docker images
+      - if [ $TRAVIS_TAG ]; then docker tag travis-ci-build-stages-demo $DOCKER_USERNAME/grafana-oauth-role-restriction:$TRAVIS_TAG; fi
+      - if [ $TRAVIS_TAG ]; then docker push $DOCKER_USERNAME/grafana-oauth-role-restriction:$TRAVIS_TAG; fi
