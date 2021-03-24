@@ -39,6 +39,8 @@ type Alertmanager struct {
 	dispatcher   *dispatch.Dispatcher
 	dispatcherWG sync.WaitGroup
 
+	stageMetrics *notify.Metrics
+
 	reloadConfigMtx sync.Mutex
 }
 
@@ -69,6 +71,8 @@ func (am *Alertmanager) Init() (err error) {
 	if err != nil {
 		return errors.Wrap(err, "unable to initialize the silencing component of alerting")
 	}
+
+	am.stageMetrics = notify.NewMetrics(prometheus.DefaultRegisterer)
 
 	return nil
 }
@@ -110,7 +114,7 @@ func (am *Alertmanager) ReloadConfigFromDatabase() error {
 	if err != nil {
 		return errors.Wrap(err, "get config from database")
 	}
-	return errors.Wrap(am.ApplyConfig(cfg), "reload from config")
+	return errors.Wrap(am.applyConfig(cfg), "reload from config")
 }
 
 func getConfigFromDatabase() (*api.PostableApiAlertingConfig, error) {
@@ -119,8 +123,16 @@ func getConfigFromDatabase() (*api.PostableApiAlertingConfig, error) {
 }
 
 // ApplyConfig applies a new configuration by re-initializing all components using the configuration provided.
-// It is not safe to call concurrently.
 func (am *Alertmanager) ApplyConfig(cfg *api.PostableApiAlertingConfig) error {
+	am.reloadConfigMtx.Lock()
+	defer am.reloadConfigMtx.Unlock()
+
+	return am.applyConfig(cfg)
+}
+
+// applyConfig applies a new configuration by re-initializing all components using the configuration provided.
+// It is not safe to call concurrently.
+func (am *Alertmanager) applyConfig(cfg *api.PostableApiAlertingConfig) error {
 	// Now, let's put together our notification pipeline
 	receivers := buildIntegrationsMap()
 	routingStage := make(notify.RoutingStage, len(receivers))
@@ -128,7 +140,7 @@ func (am *Alertmanager) ApplyConfig(cfg *api.PostableApiAlertingConfig) error {
 	silencingStage := notify.NewMuteStage(silence.NewSilencer(am.silences, am.marker, gokit_log.NewNopLogger()))
 	//TODO: We need to unify these receivers
 	for name := range receivers {
-		stage := createReceiverStage(name, receivers[name], waitFunc, am.notificationLog)
+		stage := am.createReceiverStage(name, receivers[name], waitFunc, am.notificationLog)
 		routingStage[name] = notify.MultiStage{silencingStage, stage}
 	}
 
@@ -191,7 +203,7 @@ func (am *Alertmanager) ListSilences(matchers []*labels.Matcher) ([]types.Silenc
 		return active[i].EndsAt.Before(active[j].EndsAt)
 	})
 	sort.Slice(pending, func(i int, j int) bool {
-		return pending[i].StartsAt.Before(pending[j].EndsAt)
+		return pending[i].EndsAt.Before(pending[j].EndsAt)
 	})
 	sort.Slice(expired, func(i int, j int) bool {
 		return expired[i].EndsAt.After(expired[j].EndsAt)
@@ -212,7 +224,7 @@ func (am *Alertmanager) CreateSilence(silence *types.Silence) {}
 func (am *Alertmanager) DeleteSilence(silence *types.Silence) {}
 
 // createReceiverStage creates a pipeline of stages for a receiver.
-func createReceiverStage(name string, integrations []notify.Integration, wait func() time.Duration, notificationLog notify.NotificationLog) notify.Stage {
+func (am *Alertmanager) createReceiverStage(name string, integrations []notify.Integration, wait func() time.Duration, notificationLog notify.NotificationLog) notify.Stage {
 	var fs notify.FanoutStage
 	for i := range integrations {
 		recv := &nflogpb.Receiver{
@@ -224,7 +236,7 @@ func createReceiverStage(name string, integrations []notify.Integration, wait fu
 		s = append(s, notify.NewWaitStage(wait))
 		s = append(s, notify.NewDedupStage(&integrations[i], notificationLog, recv))
 		//TODO: This probably won't work w/o the metrics
-		s = append(s, notify.NewRetryStage(integrations[i], name, nil))
+		s = append(s, notify.NewRetryStage(integrations[i], name, am.stageMetrics))
 		s = append(s, notify.NewSetNotifiesStage(notificationLog, recv))
 
 		fs = append(fs, s)
